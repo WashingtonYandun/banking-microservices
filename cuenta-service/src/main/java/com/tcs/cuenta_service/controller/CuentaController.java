@@ -1,42 +1,72 @@
 package com.tcs.cuenta_service.controller;
 
 import com.tcs.cuenta_service.domain.Cuenta;
+import com.tcs.cuenta_service.exception.ServiceError;
 import com.tcs.cuenta_service.service.ICuentaService;
+import com.tcs.cuenta_service.util.Either;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
-import static org.springframework.http.HttpStatus.CREATED;
-
 @RestController
 @RequestMapping("/api/cuentas")
+@RequiredArgsConstructor
 public class CuentaController {
-
     private final ICuentaService svc;
 
-    public CuentaController(ICuentaService svc) {
-        this.svc = svc;
-    }
-
     @PostMapping
-    public ResponseEntity<Cuenta> crear(@RequestBody Cuenta c) {
-        Cuenta nueva = svc.crear(c);
-        return ResponseEntity.status(CREATED).body(nueva);
+    public ResponseEntity<?> crear(@RequestBody Cuenta c) {
+        Either<ServiceError, Cuenta> res = svc.crear(c);
+        if (res.isLeft()) {
+            ServiceError err = res.getLeft();
+            return ResponseEntity
+                    .status(err.getStatus())
+                    .body(ErrorResponse.of(err.getStatus(), err.getMessage()));
+        }
+        return ResponseEntity
+                .status(HttpStatus.CREATED)
+                .body(res.getRight());
     }
 
     @GetMapping
-    public List<Cuenta> listar() {
-        return svc.listar();
+    public ResponseEntity<?> listarPorCliente(@RequestParam String clienteId) {
+        Either<ServiceError, List<Cuenta>> res = svc.listarPorCliente(clienteId);
+        if (res.isLeft()) {
+            ServiceError err = res.getLeft();
+            return ResponseEntity
+                    .status(err.getStatus())
+                    .body(ErrorResponse.of(err.getStatus(), err.getMessage()));
+        }
+        return ResponseEntity.ok(res.getRight());
     }
 
-    @GetMapping("/{id}")
-    public Cuenta obtener(@PathVariable Long id) {
-        return svc.obtenerPorId(id);
+    @PutMapping("/{id}")
+    public ResponseEntity<?> actualizar(
+            @PathVariable Long id,
+            @RequestBody Cuenta c
+    ) {
+        Either<ServiceError, Cuenta> res = svc.actualizar(id, c);
+        if (res.isLeft()) {
+            ServiceError err = res.getLeft();
+            return ResponseEntity
+                    .status(err.getStatus())
+                    .body(ErrorResponse.of(err.getStatus(), err.getMessage()));
+        }
+        return ResponseEntity.ok(res.getRight());
     }
 
     @DeleteMapping("/{id}")
-    public void eliminar(@PathVariable Long id) {
-        svc.eliminar(id);
+    public ResponseEntity<?> eliminar(@PathVariable Long id) {
+        Either<ServiceError, Void> res = svc.eliminar(id);
+        if (res.isLeft()) {
+            ServiceError err = res.getLeft();
+            return ResponseEntity
+                    .status(err.getStatus())
+                    .body(ErrorResponse.of(err.getStatus(), err.getMessage()));
+        }
+        return ResponseEntity.noContent().build();
     }
 }

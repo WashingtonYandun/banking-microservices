@@ -1,57 +1,91 @@
 package com.tcs.cuenta_service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tcs.cuenta_service.domain.Cuenta;
 import com.tcs.cuenta_service.domain.Movimiento;
-import com.tcs.cuenta_service.dto.ReporteDTO;
+import com.tcs.cuenta_service.repository.CuentaRepository;
+import com.tcs.cuenta_service.repository.MovimientoRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.http.*;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
 
-import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.util.Map;
+import java.time.Instant;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest
+@AutoConfigureMockMvc
 class ReporteControllerIntegrationTest {
 
-    @Autowired
-    private TestRestTemplate rest;
+    @Autowired private MockMvc mockMvc;
+    @Autowired private CuentaRepository cuentaRepo;
+    @Autowired private MovimientoRepository movRepo;
+
+    @BeforeEach
+    void setUp() {
+        movRepo.deleteAll();
+        cuentaRepo.deleteAll();
+    }
 
     @Test
-    void generarReporte() {
-        // 1) Crear cuenta
-        Cuenta cuenta = new Cuenta();
-        cuenta.setNumeroCuenta("ABC123");
-        cuenta.setTipoCuenta("AHORRO");
-        cuenta.setSaldo(BigDecimal.ZERO);
-        cuenta.setEstado(true);
-        cuenta.setClienteId("C100");
-        ResponseEntity<Cuenta> cResp = rest.postForEntity("/api/cuentas", cuenta, Cuenta.class);
-        assertThat(cResp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    void estadoCuenta_happyPath() throws Exception {
+        String clienteId = "C1";
+        Cuenta c1 = cuentaRepo.save(Cuenta.builder()
+                .numeroCuenta("ACC1")
+                .tipoCuenta("AHORRO")
+                .saldo(100.0)
+                .estado(true)
+                .clienteId(clienteId)
+                .build());
 
-        // 2) Registrar movimiento
-        Movimiento m = new Movimiento();
-        m.setTipoMovimiento("DEPOSITO");
-        m.setValor(new BigDecimal("200"));
-        HttpEntity<Movimiento> request = new HttpEntity<>(m);
-        ResponseEntity<Movimiento> mResp = rest.exchange(
-                "/api/movimientos?numeroCuenta=ABC123",
-                HttpMethod.POST, request, Movimiento.class);
-        assertThat(mResp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        Instant now = Instant.now();
+        // movimiento dentro del rango
+        movRepo.save(Movimiento.builder()
+                .cuenta(c1)
+                .tipoMovimiento("DEPOSITO")
+                .valor(50.0)
+                .fecha(now)
+                .saldoDisponible(150.0)
+                .build());
+        // movimiento fuera del rango
+        movRepo.save(Movimiento.builder()
+                .cuenta(c1)
+                .tipoMovimiento("RETIRO")
+                .valor(-20.0)
+                .fecha(now.minusSeconds(10_000))
+                .saldoDisponible(80.0)
+                .build());
 
-        // 3) Llamar reporte
-        String url = "/api/reportes?clienteId=C100" +
-                "&desde=" + LocalDate.now().minusDays(1) +
-                "&hasta=" + LocalDate.now().plusDays(1);
-        ResponseEntity<ReporteDTO> rResp = rest.getForEntity(url, ReporteDTO.class);
-        assertThat(rResp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        mockMvc.perform(get("/api/reportes")
+                        .param("clienteId", clienteId)
+                        .param("desde", now.minusSeconds(1_000).toString())
+                        .param("hasta", now.plusSeconds(1_000).toString())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.clienteId").value(clienteId))
+                .andExpect(jsonPath("$.cuentas[0].numeroCuenta").value("ACC1"))
+                .andExpect(jsonPath("$.cuentas[0].movimientos.length()").value(1))
+                .andExpect(jsonPath("$.cuentas[0].movimientos[0].tipoMovimiento")
+                        .value("DEPOSITO"));
+    }
 
-        ReporteDTO reporte = rResp.getBody();
-        assertThat(reporte.getCuentas()).hasSize(1);
-        assertThat(reporte.getCuentas().get(0).getMovimientos()).hasSize(1);
+    @Test
+    void estadoCuenta_fechaInvalida() throws Exception {
+        Instant desde = Instant.now();
+        Instant hasta = desde.minusSeconds(3600);
+
+        mockMvc.perform(get("/api/reportes")
+                        .param("clienteId", "C1")
+                        .param("desde", desde.toString())
+                        .param("hasta", hasta.toString())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message")
+                        .value("'desde' debe ser anterior o igual a 'hasta'"));
     }
 }

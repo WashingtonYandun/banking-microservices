@@ -1,48 +1,74 @@
 package com.tcs.cuenta_service.controller;
 
 import com.tcs.cuenta_service.domain.Cuenta;
-import com.tcs.cuenta_service.dto.CuentaReportDTO;
-import com.tcs.cuenta_service.dto.ReporteDTO;
-import com.tcs.cuenta_service.repository.CuentaRepository;
-import com.tcs.cuenta_service.repository.MovimientoRepository;
-import org.springframework.format.annotation.DateTimeFormat;
+import com.tcs.cuenta_service.domain.Movimiento;
+import com.tcs.cuenta_service.exception.ServiceError;
+import com.tcs.cuenta_service.service.ICuentaService;
+import com.tcs.cuenta_service.service.IMovimientoService;
+import com.tcs.cuenta_service.util.Either;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/reportes")
+@RequiredArgsConstructor
 public class ReporteController {
 
-    private final CuentaRepository cuentaRepo;
-    private final MovimientoRepository movRepo;
-
-    public ReporteController(CuentaRepository cuentaRepo,
-                             MovimientoRepository movRepo) {
-        this.cuentaRepo = cuentaRepo;
-        this.movRepo = movRepo;
-    }
+    private final ICuentaService cuentaSvc;
+    private final IMovimientoService movSvc;
 
     @GetMapping
-    public ReporteDTO estadoDeCuenta(
+    public ResponseEntity<?> estadoCuenta(
             @RequestParam String clienteId,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate desde,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate hasta) {
+            @RequestParam Instant desde,
+            @RequestParam Instant hasta
+    ) {
+        Either<ServiceError, List<Cuenta>> cuentasE = cuentaSvc.listarPorCliente(clienteId);
+        if (cuentasE.isLeft()) {
+            ServiceError err = cuentasE.getLeft();
+            return ResponseEntity
+                    .status(err.getStatus())
+                    .body(ErrorResponse.of(err.getStatus(), err.getMessage()));
+        }
+        List<Cuenta> cuentas = cuentasE.getRight();
 
-        List<Cuenta> cuentas = cuentaRepo.findByClienteId(clienteId);
+        // rango
+        List<CuentaReporteDto> cuentasDto = new ArrayList<>();
+        for (Cuenta c : cuentas) {
+            Either<ServiceError, List<Movimiento>> movsE =
+                    movSvc.movimientosPorCuentaYFecha(c.getNumeroCuenta(), desde, hasta);
+            if (movsE.isLeft()) {
+                ServiceError err = movsE.getLeft();
+                return ResponseEntity
+                        .status(err.getStatus())
+                        .body(ErrorResponse.of(err.getStatus(), err.getMessage()));
+            }
+            cuentasDto.add(new CuentaReporteDto(
+                    c.getNumeroCuenta(),
+                    c.getSaldo(),
+                    movsE.getRight()
+            ));
+        }
 
-        List<CuentaReportDTO> detalles = cuentas.stream().map(c -> {
-            var movimientos = movRepo.findByCuentaAndFechaBetween(
-                    c,
-                    desde.atStartOfDay(),
-                    hasta.atTime(23,59,59)
-            );
-            return new CuentaReportDTO(c.getNumeroCuenta(), c.getSaldo(), movimientos);
-        }).collect(Collectors.toList());
-
-        return new ReporteDTO(clienteId, desde, hasta, detalles);
+        ReporteDto reporte = new ReporteDto(clienteId, desde, hasta, cuentasDto);
+        return ResponseEntity.ok(reporte);
     }
+
+    public record ReporteDto(
+            String clienteId,
+            Instant desde,
+            Instant hasta,
+            List<CuentaReporteDto> cuentas
+    ) {}
+
+    public record CuentaReporteDto(
+            String numeroCuenta,
+            Double saldoActual,
+            List<Movimiento> movimientos
+    ) {}
 }
